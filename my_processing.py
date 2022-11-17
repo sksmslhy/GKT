@@ -6,6 +6,8 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset, TensorDataset, DataLoader
 from torch.nn.utils.rnn import pad_sequence
 from utils import build_dense_graph
+import re
+import numpy as np
 
 class KTDataset(Dataset):
     def __init__(self, features, questions, answers):
@@ -119,7 +121,15 @@ def load_dataset(file_path, batch_size, graph_type, dkt_graph_path=None, train_r
             graph = build_transition_graph(question_list, seq_len_list, train_dataset.indices, student_num, concept_num)
         elif graph_type == 'DKT':
             graph = build_dkt_graph(dkt_graph_path, concept_num)
-        if use_cuda and graph_type in ['Dense', 'Transition', 'DKT']:
+        elif graph_type == 'MyGraph':
+            graph = normed_adj_graph()
+        elif graph_type == 'MyHMM':
+            graph = normed_adj_hmm_graph()
+        elif graph_type == 'MyERF':
+            graph = normed_adj_ERF_graph()
+        elif graph_type == 'MyFIR':
+            graph = normed_adj_FIR_graph()
+        if use_cuda and graph_type in ['Dense', 'Transition', 'DKT', 'MyGraph', 'MyHMM', 'MyERF', 'MyFIR']:
             graph = graph.cuda()
     return concept_num, graph, train_data_loader, valid_data_loader, test_data_loader
 
@@ -158,3 +168,95 @@ def build_dkt_graph(file_path, concept_num):
     graph = torch.from_numpy(graph).float()
     return graph
 
+
+def normed_adj_graph():
+    gt = pd.read_csv('./data/GT_SSM11_1116.csv')
+    kcs = gt['from'].unique().tolist()
+    kcs.extend(gt['to'].unique().tolist())
+    kcs = list(set(kcs))
+    kcs.sort()
+    graph = np.zeros([len(kcs), len(kcs)])
+    for i in range(len(gt)):
+        graph[kcs.index(gt['from'][i])][kcs.index(gt['to'][i])] = 1
+    # row normalization
+    for i in range(len(graph)):
+        if graph[i].sum() != 0:
+            graph[i] = (graph[i]/graph[i].sum())
+    # covert to tensor
+    graph = torch.from_numpy(graph).float()
+    return graph
+
+# HMM
+def normed_adj_hmm_graph():
+    gt = pd.read_csv('./data/HMM_11.csv', encoding='cp949')
+    cond = gt.hmm_direction == 'forward'
+    gt = gt[cond]
+    gt.reset_index(drop=True, inplace=True)
+    gt = gt[['before', 'after']]
+    
+    KC = pd.read_csv('./data/kc_dedup_smath11.csv')
+    kcs = KC['kc_uid'].unique().tolist()
+    kcs.sort()
+
+    graph = np.zeros([len(kcs), len(kcs)])
+
+    for i in range(len(gt)):
+        graph[kcs.index(gt['before'][i])][kcs.index(gt['after'][i])] = 1
+    # row normalization
+    for i in range(len(graph)):
+        if graph[i].sum() != 0:
+            graph[i] = (graph[i]/graph[i].sum())
+    # covert to tensor
+    graph = torch.from_numpy(graph).float()
+    return graph
+
+
+# ElasticNet + RF : top 5 rel
+def normed_adj_ERF_graph():
+    gt = pd.read_csv('./data/ElaRF_ssm_11_relation.csv')
+    gt = gt[['before', 'after']]
+    KC = pd.read_csv('./data/kc_dedup_smath11.csv')
+    kcs = KC['kc_uid'].unique().tolist()
+    kcs.sort()
+
+    graph = np.zeros([len(kcs), len(kcs)])
+    # adj mat
+    for i in range(len(kcs)):
+        cond = gt.before == kcs[i]
+        now_rels = gt[cond]['after'].tolist()[:5]
+        for j in range(5):
+            graph[kcs.index(kcs[i])][kcs.index(now_rels[j])] = 1
+    # row normalization
+    for i in range(len(graph)):
+        if graph[i].sum() != 0:
+            graph[i] = (graph[i]/graph[i].sum())
+    # covert to tensor
+    graph = torch.from_numpy(graph).float()
+    return graph
+
+
+# FIR-DKT
+def normed_adj_FIR_graph():
+    gt = pd.read_csv('./data/FIR_ssm11.csv')
+    KC = pd.read_csv('./data/kc_dedup_smath11.csv')
+    kcs = KC['kc_uid'].unique().tolist()
+    kcs.sort()
+    
+    # find FIR best set of each KC
+    best_sets = []
+    for target in kcs:
+        cond = gt.target== target
+        t = gt[cond]['auc'].idxmax()
+        best_sets.append(gt.iloc[t:t+1,].filter(regex='rel', axis=1).values.reshape(-1).tolist()[:5])
+    graph = np.zeros([len(kcs), len(kcs)])
+    # adj mat
+    for i in range(len(kcs)):
+        for j in range(5):
+            graph[kcs.index(kcs[i])][kcs.index(best_sets[i][j])] = 1
+    # row normalization
+    for i in range(len(graph)):
+        if graph[i].sum() != 0:
+            graph[i] = (graph[i]/graph[i].sum())
+    # covert to tensor
+    graph = torch.from_numpy(graph).float()
+    return graph

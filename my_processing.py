@@ -129,7 +129,11 @@ def load_dataset(file_path, batch_size, graph_type, dkt_graph_path=None, train_r
             graph = normed_adj_ERF_graph()
         elif graph_type == 'MyFIR':
             graph = normed_adj_FIR_graph()
-        if use_cuda and graph_type in ['Dense', 'Transition', 'DKT', 'MyGraph', 'MyHMM', 'MyERF', 'MyFIR']:
+        elif graph_type == 'My2Hop':
+            graph = two_hop_transition_graph(question_list, seq_len_list, train_dataset.indices, student_num, concept_num)
+        elif graph_type == 'My2HopD':
+            graph = two_hop_transition_daekyo_graph(question_list, seq_len_list, train_dataset.indices, student_num, concept_num)
+        if use_cuda and graph_type in ['Dense', 'Transition', 'DKT', 'MyGraph', 'MyHMM', 'MyERF', 'MyFIR', 'My2Hop', 'My2HopD']:
             graph = graph.cuda()
     return concept_num, graph, train_data_loader, valid_data_loader, test_data_loader
 
@@ -257,6 +261,101 @@ def normed_adj_FIR_graph():
     for i in range(len(graph)):
         if graph[i].sum() != 0:
             graph[i] = (graph[i]/graph[i].sum())
+    # covert to tensor
+    graph = torch.from_numpy(graph).float()
+    return graph
+
+
+# 2-hop transition
+def two_hop_transition_graph(question_list, seq_len_list, indices, student_num, concept_num):
+    graph = np.zeros((concept_num, concept_num))
+    student_dict = dict(zip(indices, np.arange(student_num)))
+    for i in range(student_num):
+        if i not in student_dict:
+            continue
+        questions = question_list[i]
+        seq_len = seq_len_list[i]
+        for j in range(seq_len - 1):
+            pre = questions[j]
+            next = questions[j + 1]
+            graph[pre, next] += 1
+    np.fill_diagonal(graph, 0)
+    # norm
+    for i in range(len(graph)):
+        for j in range(len(graph)):
+            if graph[i][j] != 0:
+                graph[i][j] /= graph[i][j]
+    
+    # kc
+    KC = pd.read_csv('./data/kc_dedup_smath11.csv')
+    kcs = KC['kc_uid'].unique().tolist()
+    kcs.sort()
+    
+    # 2-hop transition graph
+    for i in range(len(kcs)-1, 0, -1):
+        pres = list(np.where(np.array(graph).T[i] == 1))[0].tolist()
+        for p in range(len(pres)):
+            idx = pres[p]
+            hops = list(np.where(np.array(graph).T[idx] == 1))[0].tolist()
+            for h in range(len(hops)):
+                if abs(int(kcs[hops[h]][-2:]) - int(kcs[i][-2:])) < 6:
+                    graph[hops[h]][i] = 1
+    
+    # row normalization
+    for i in range(len(graph)):
+        if graph[i].sum() != 0:
+            graph[i] = (graph[i]/graph[i].sum())
+
+    # covert to tensor
+    graph = torch.from_numpy(graph).float()
+    return graph
+
+
+# 2-hop transition
+def two_hop_transition_daekyo_graph(question_list, seq_len_list, indices, student_num, concept_num):
+    graph = np.zeros((concept_num, concept_num))
+    student_dict = dict(zip(indices, np.arange(student_num)))
+    for i in range(student_num):
+        if i not in student_dict:
+            continue
+        questions = question_list[i]
+        seq_len = seq_len_list[i]
+        for j in range(seq_len - 1):
+            pre = questions[j]
+            next = questions[j + 1]
+            graph[pre, next] += 1
+    np.fill_diagonal(graph, 0)
+    
+    # kc
+    KC = pd.read_csv('./data/kc_dedup_smath11.csv')
+    kcs = KC['kc_uid'].unique().tolist()
+    kcs.sort()
+    
+    # 2-hop transition graph
+    for i in range(len(kcs)-1, 0, -1):
+        pres = list(np.where(np.array(graph).T[i] == 1))[0].tolist()
+        for p in range(len(pres)):
+            idx = pres[p]
+            hops = list(np.where(np.array(graph).T[idx] == 1))[0].tolist()
+            for h in range(len(hops)):
+                if abs(int(kcs[hops[h]][-2:]) - int(kcs[i][-2:])) < 6:
+                    graph[hops[h]][i] = 1
+
+    d_graph = normed_adj_graph()
+
+    graph = np.array(graph) + np.array(d_graph)
+
+    # 1로 만들기
+    for i in range(len(graph)):
+        for j in range(len(graph)):
+            if graph[i][j] != 0:
+                graph[i][j] /= graph[i][j]
+
+    # row normalization
+    for i in range(len(graph)):
+        if graph[i].sum() != 0:
+            graph[i] = (graph[i]/graph[i].sum())
+
     # covert to tensor
     graph = torch.from_numpy(graph).float()
     return graph

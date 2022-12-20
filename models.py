@@ -27,9 +27,9 @@ class GKT(nn.Module):
         self.res_len = 2 if binary else 12
         self.has_cuda = has_cuda
 
-        assert graph_type in ['Dense', 'Transition', 'DKT', 'PAM', 'MHA', 'VAE', 'MyGraph', 'MyHMM', 'MyERF', 'MyFIR']
+        assert graph_type in ['Dense', 'Transition', 'DKT', 'PAM', 'MHA', 'VAE', 'MyGraph', 'MyHMM', 'MyERF', 'MyFIR', 'My2Hop', 'My2HopD']
         self.graph_type = graph_type
-        if graph_type in ['Dense', 'Transition', 'DKT', 'MyGraph', 'MyHMM', 'MyERF', 'MyFIR']:
+        if graph_type in ['Dense', 'Transition', 'DKT', 'MyGraph', 'MyHMM', 'MyERF', 'MyFIR', 'My2Hop', 'My2HopD']:
             assert edge_type_num == 2
             assert graph is not None and graph_model is None
             self.graph = nn.Parameter(graph)  # [concept_num, concept_num]
@@ -51,6 +51,13 @@ class GKT(nn.Module):
         self.one_hot_q = torch.eye(self.concept_num, device=self.one_hot_feat.device)
         zero_padding = torch.zeros(1, self.concept_num, device=self.one_hot_feat.device)
         self.one_hot_q = torch.cat((self.one_hot_q, zero_padding), dim=0)
+
+        #print("one_hot_feat : ", one_hot_feat)
+        #print("self.one_hot_feat : ", self.one_hot_feat)
+        #print("self.one_hot_q : ", self.one_hot_q)
+        #print("zero_padding : ", zero_padding)
+        #print("self.one_hot_q : ", self.one_hot_q)
+
         # concept and concept & response embeddings
         self.emb_x = nn.Embedding(self.res_len * concept_num, embedding_dim)
         # last embedding is used for padding, so dim + 1
@@ -60,7 +67,7 @@ class GKT(nn.Module):
         mlp_input_dim = hidden_dim + embedding_dim
         self.f_self = MLP(mlp_input_dim, hidden_dim, hidden_dim, dropout=dropout, bias=bias)
         self.f_neighbor_list = nn.ModuleList()
-        if graph_type in ['Dense', 'Transition', 'DKT', 'PAM', 'MyGraph', 'MyHMM', 'MyERF', 'MyFIR']:
+        if graph_type in ['Dense', 'Transition', 'DKT', 'PAM', 'MyGraph', 'MyHMM', 'MyERF', 'MyFIR', 'My2Hop', 'My2HopD']:
             # f_in and f_out functions
             self.f_neighbor_list.append(MLP(2 * mlp_input_dim, hidden_dim, hidden_dim, dropout=dropout, bias=bias))
             self.f_neighbor_list.append(MLP(2 * mlp_input_dim, hidden_dim, hidden_dim, dropout=dropout, bias=bias))
@@ -91,8 +98,11 @@ class GKT(nn.Module):
         Return:
             tmp_ht: aggregation results of concept hidden knowledge state and concept(& response) embedding
         """
+        #print("ENTER AGG FUNC")
         qt_mask = torch.ne(qt, -1)  # [batch_size], qt != -1
         x_idx_mat = torch.arange(self.res_len * self.concept_num, device=xt.device)
+        
+        #print("x_idx_mat : ", x_idx_mat)
         x_embedding = self.emb_x(x_idx_mat)  # [res_len * concept_num, embedding_dim]
         masked_feat = F.embedding(xt[qt_mask], self.one_hot_feat)  # [mask_num, res_len * concept_num]
         res_embedding = masked_feat.mm(x_embedding)  # [mask_num, embedding_dim]
@@ -104,7 +114,11 @@ class GKT(nn.Module):
 
         index_tuple = (torch.arange(mask_num, device=xt.device), qt[qt_mask].long())
         concept_embedding[qt_mask] = concept_embedding[qt_mask].index_put(index_tuple, res_embedding)
+        #print("qt_mask : ", qt_mask)
+        #print("concept_embedding : ", concept_embedding.shape)
+        #print("ht : ", ht.shape)
         tmp_ht = torch.cat((ht, concept_embedding), dim=-1)  # [batch_size, concept_num, hidden_dim + embedding_dim]
+        #print("tmp_ht : ", tmp_ht.shape)
         return tmp_ht
 
     # GNN aggregation step, as shown in 3.3.2 Equation 1 of the paper
@@ -134,7 +148,7 @@ class GKT(nn.Module):
         neigh_ht = torch.cat((expanded_self_ht, masked_tmp_ht), dim=-1)  #[mask_num, concept_num, 2 * (hidden_dim + embedding_dim)]
         concept_embedding, rec_embedding, z_prob = None, None, None
 
-        if self.graph_type in ['Dense', 'Transition', 'DKT', 'PAM', 'MyGraph', 'MyHMM', 'MyERF', 'MyFIR']:
+        if self.graph_type in ['Dense', 'Transition', 'DKT', 'PAM', 'MyGraph', 'MyHMM', 'MyERF', 'MyFIR', 'My2Hop', 'My2HopD']:
             adj = self.graph[masked_qt.long(), :].unsqueeze(dim=-1)  # [mask_num, concept_num, 1]
             reverse_adj = self.graph[:, masked_qt.long()].transpose(0, 1).unsqueeze(dim=-1)  # [mask_num, concept_num, 1]
             # self.f_neighbor_list[0](neigh_ht) shape: [mask_num, concept_num, hidden_dim]
@@ -292,8 +306,9 @@ class GKT(nn.Module):
             concept_embedding: input of VAE (optional)
             rec_embedding: reconstructed input of VAE (optional)
             z_prob: probability distribution of latent variable z in VAE (optional)
-        """
+        """        
         batch_size, seq_len = features.shape
+        
         ht = Variable(torch.zeros((batch_size, self.concept_num, self.hidden_dim), device=features.device))
         pred_list = []
         ec_list = []  # concept embedding list in VAE
@@ -305,6 +320,7 @@ class GKT(nn.Module):
             qt_mask = torch.ne(qt, -1)  # [batch_size], next_qt != -1
             tmp_ht = self._aggregate(xt, qt, ht, batch_size)  # [batch_size, concept_num, hidden_dim + embedding_dim]
             h_next, concept_embedding, rec_embedding, z_prob = self._update(tmp_ht, ht, qt)  # [batch_size, concept_num, hidden_dim]
+            #exit()
             ht[qt_mask] = h_next[qt_mask]  # update new ht
             yt = self._predict(h_next, qt)  # [batch_size, concept_num]
             if i < seq_len - 1:

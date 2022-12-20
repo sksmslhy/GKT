@@ -13,6 +13,7 @@ from torch.autograd import Variable
 from models import GKT, MultiHeadAttention, VAE, DKT
 from metrics import KTLoss, VAELoss
 from my_processing import load_dataset
+# from processing import load_dataset
 import logging
 
 # Graph-based Knowledge Tracing: Modeling Student Proficiency Using Graph Neural Network.
@@ -64,7 +65,6 @@ parser.add_argument('--test-model-dir', type=str, default='logs/expDKT', help='E
 args = parser.parse_args()
 args.cuda = not args.no_cuda and torch.cuda.is_available()
 args.factor = not args.no_factor
-print(args)
 
 random.seed(args.seed)
 np.random.seed(args.seed)
@@ -119,6 +119,7 @@ else:
     print("WARNING: No save_dir provided!" + "Testing (within this script) will throw an error.")
 
 logging.info(args)
+print(args, file=log)
 
 # load dataset
 dataset_path = os.path.join(args.data_dir, args.data_file)
@@ -433,3 +434,5 @@ test()
 if log is not None:
     print(save_dir)
     log.close()
+
+# python3 train.py --data-file=kc_dedup_smath11.csv --model=GKT --graph-type=My2Hop
